@@ -1,0 +1,6 @@
+dist-newstyle
+.vscode
+app/*.o
+app/*.hi
+app/Main
+cabal.project*
