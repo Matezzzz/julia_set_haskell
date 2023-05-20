@@ -4,7 +4,7 @@ module Main where
 
 
 import SDL
-import Control.Monad (unless, join)
+import Control.Monad (unless)
 import Foreign (Storable(pokeElemOff), Ptr, castPtr, Word8)
 import Data.Colour.RGBSpace.HSL
 import Data.Colour.RGBSpace (RGB(channelGreen), RGB(channelRed), RGB(channelBlue), Colour, RGB(RGB))
@@ -48,14 +48,14 @@ toWord8 (RGB r g b) =
     in RGB (t r) (t g) (t b)
 
 --Get the iteration of divergence and color loop frequency, return the current color
-paletteColor:: Float -> Float -> RGB Word8
-paletteColor i freq = toWord8 (hsl (360/realToFrac freq*realToFrac i) 1.0 0.5)
+juliaPaletteColor:: Float -> Float -> RGB Word8
+juliaPaletteColor i period = toWord8 (hsl (360/realToFrac period*realToFrac i) 1.0 0.5)
 
 --Return the color of the julia fractal at the given position
 juliaColor :: Complex Float -> Complex Float -> Int -> Float -> RGB Word8
-juliaColor z c max_iters color_freq
+juliaColor z c max_iters color_period
     | round depth == max_iters = RGB 0 0 0  --return black if we didn't diverge
-    | otherwise = Main.paletteColor depth color_freq --otherwise return a palette color
+    | otherwise = juliaPaletteColor depth color_period --otherwise return a palette color
     where depth = juliaIter z c max_iters
 
 
@@ -127,9 +127,9 @@ writePixel ptr (x, y) (w, _) color = do
 
 --Render the julia fractal into the provided pointer
 renderJulia::Ptr () -> ViewportState -> (Int, Int) -> (Int, Int) -> Complex Float -> Int -> Float -> IO ()
-renderJulia ptr viewport surf_size@(sw, sh) render_size@(rw, rh) c max_iters color_freq = do
+renderJulia ptr viewport surf_size@(sw, sh) render_size@(rw, rh) c max_iters color_period = do
     let indices = [(x, y) | x <- [0..rw-1], y <- [0..rh-1]]
-    mapM_ (\pos -> do writePixel ptr pos surf_size (juliaColor (transformCoordinates viewport pos render_size) c max_iters color_freq)) indices
+    mapM_ (\pos -> do writePixel ptr pos surf_size (juliaColor (transformCoordinates viewport pos render_size) c max_iters color_period)) indices
 
 
 
@@ -138,7 +138,7 @@ data JuliaState = JuliaState{
     viewport :: ViewportState,
     juliaC :: Complex Float,
     juliaIters :: Int,
-    colorFreq :: Float
+    colorPeriod :: Float
 } deriving Show
 
 --App state - the SDL window, frame surface, whether the full resolution is rendered, and current julia state
@@ -178,7 +178,7 @@ updateSurface wnd (Just surf) = do
 
 --Change the viewport in julia state to match the window ratio
 matchWindowRatio:: JuliaState -> Window -> IO JuliaState
-matchWindowRatio js@(JuliaState vs@(ViewportState fx fy tx ty) c its freq) wnd = do
+matchWindowRatio js@(JuliaState vs@(ViewportState fx fy tx ty) c its period) wnd = do
     (V2 wnd_w wnd_h) <- get (windowSize wnd)
     let (view_w, view_h) = (sizeX vs, sizeY vs)
         wnd_r = fromIntegral wnd_w / fromIntegral wnd_h --window ratio
@@ -193,8 +193,8 @@ matchWindowRatio js@(JuliaState vs@(ViewportState fx fy tx ty) c its freq) wnd =
             midy=middleY vs
         --Update the viewpoer to keep one dimension the same while making the other one larger
         return (if new_w > view_w
-            then JuliaState (ViewportState (midx-new_w/2) fy (midx+new_w/2) ty) c its freq
-            else JuliaState (ViewportState fx (midy-new_h/2) tx (midy+new_h/2)) c its freq)
+            then JuliaState (ViewportState (midx-new_w/2) fy (midx+new_w/2) ty) c its period
+            else JuliaState (ViewportState fx (midy-new_h/2) tx (midy+new_h/2)) c its period)
 
 --Axis input - processes input using two buttons each defining movement in the opposite direction. E.g. UP/DOWN arrow. Returns (-1, 0, 1) based on the movement, and True/False if any keys are pressed
 axisInput :: Num a => (Scancode -> Bool) -> Scancode -> Scancode -> (a, Bool)
@@ -211,9 +211,9 @@ axisInputShift pressed key =
     in if pr then (if sh then -1 else 1, True) else (0, False)
 
 
---process all keyboard inputs, moving the camera, zooming, updating the number of iterations, and more. Return the new state and whether anything has changed
-processInput :: (Scancode -> Bool) -> JuliaState -> (JuliaState, Bool)
-processInput pressed (JuliaState vp (cx :+ cy) its freq) =
+--process all keyboard inputs, moving the camera, zooming, updating the number of iterations, and more. Return the new state, whether anything has changed
+processInput :: (Scancode -> Bool) -> JuliaState -> (JuliaState, Bool, Bool)
+processInput pressed (JuliaState vp (cx :+ cy) its period) =
     let ax = axisInput pressed
         axs = axisInputShift pressed
         --camera movement = WASD keys
@@ -227,18 +227,18 @@ processInput pressed (JuliaState vp (cx :+ cy) its freq) =
         --Change the number of julia iterations - O+Shift. Use a separate call, since we want dits to be an int, not a float like the others
         (dits, on6) = axisInputShift pressed ScancodeO
         --Change the color frequency - P+Shift
-        (dfreq, on7) = axs ScancodeP
+        (dperiod, on7) = axs ScancodeP
         --Constants for all changing variables
         move_speed = 0.05   --move 5% of viewport size per frame
         zoom_speed = 0.1    --zoom by e^0.1 ~ 110% or e^-0.1 ~ 90% each frame
         c_speed = 0.005     --multiply c by e^0.005 ~ 100.5% or e^-0.005 ~ 99.5% each frame
-        freq_speed = 0.05   --multiply frequency by e^0.05 of by e^-0.05 each frame
+        period_speed = 0.05   --multiply frequency by e^0.05 of by e^-0.05 each frame
         --transform handling the viewport transformation - move, then zoom
         vp_transform = zoomViewport (exp $ zoom_speed*zoom) . moveViewport (move_speed*movex, move_speed*movey)
         c_tr = exp . (c_speed*) --julia C transformation
     in (
         --compute the new julia state by modifying any components necessary
-        JuliaState (vp_transform vp) ((cx*c_tr dcx) :+ (cy*c_tr dcy)) (its+dits) (freq*exp (freq_speed*dfreq)),
+        JuliaState (vp_transform vp) ((cx*c_tr dcx) :+ (cy*c_tr dcy)) (its+dits) (period*exp (period_speed*dperiod)),
         --return true if any inputs have changed (any key is pressed)
         or [on1, on2, on3, on4, on5, on6, on7]
     )
@@ -246,13 +246,14 @@ processInput pressed (JuliaState vp (cx :+ cy) its freq) =
 
 
 
-
+--Return true if the user has pressed the window X button
 shouldQuit :: IO Bool
 shouldQuit = do
     event <- pollEvent
     case event of
-        Nothing -> return False
+        Nothing -> return False --no events remaining, return False
         Just ev ->
+            --if this event is the x button press, return True, else continue with the search
             if eventPayload ev == QuitEvent
                 then return True
                 else do shouldQuit
@@ -266,7 +267,8 @@ appStep (AppState wnd frame_old full_resolution jstate_old) = do
     pressed_keys <- getKeyboardState    --get pressed keys
     jstate_scaled <- matchWindowRatio jstate_old wnd    --if the window ratio has changed, update the viewport accordingly
     --update julia state according to current input
-    let (jstate@(JuliaState view julia_c iters color_freq), params_changed) = processInput pressed_keys jstate_scaled
+    let (jstate@(JuliaState view julia_c iters color_period), params_changed) = processInput pressed_keys jstate_scaled
+
     --update the surface if the window size has changed
     (frame, surf_changed) <- updateSurface wnd frame_old
     --get render surface dimensions
@@ -284,7 +286,7 @@ appStep (AppState wnd frame_old full_resolution jstate_old) = do
     else (do
         lockSurface frame
         pixels <- surfacePixels frame
-        renderJulia pixels view (fromIntegral fw, fromIntegral fh) (fromIntegral rw, fromIntegral rh) julia_c iters color_freq
+        renderJulia pixels view (fromIntegral fw, fromIntegral fh) (fromIntegral rw, fromIntegral rh) julia_c iters color_period
         unlockSurface frame)
 
     --Display the rendered julia fractal to screen
@@ -293,11 +295,10 @@ appStep (AppState wnd frame_old full_resolution jstate_old) = do
     --Update the window to match the newly updated surface
     SDL.updateWindowSurface wnd
 
-    
-
     --check whether the user clicked the X window button
     pumpEvents
     should_quit <- shouldQuit
+
     --return the new app state, and true if we should quit (X button / Esc key were pressed)
     return (AppState wnd (Just frame) (not params_changed && not surf_changed) jstate, pressed_keys ScancodeEscape || should_quit)
 
@@ -316,8 +317,8 @@ main = do
     --initialize SDL
     initializeAll
     --create a SDL window
-    window <- createWindow "Julia fractal" defaultWindow
-    --Create the default app state - viewport between (-1, -1) and (1, 1), c=0.285+0.01i, 100 iterations, 50 color frequency
+    window <- createWindow "Julia set" defaultWindow
+    --Create the default app state - viewport between (-1, -1) and (1, 1), c=0.285+0.01i, 100 iterations, 50 color period (how many iterations to circle through the whole color spectrum)
     let app_state = AppState window Nothing False $ JuliaState (ViewportState (-1) (-1) 1 1) (0.285 :+ 0.01) 100 50
 
     --run the app
