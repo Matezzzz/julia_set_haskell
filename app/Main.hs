@@ -212,7 +212,7 @@ axisInputShift pressed key =
 
 
 --process all keyboard inputs, moving the camera, zooming, updating the number of iterations, and more. Return the new state, whether anything has changed
-processInput :: (Scancode -> Bool) -> JuliaState -> (JuliaState, Bool, Bool)
+processInput :: (Scancode -> Bool) -> JuliaState -> (JuliaState, Bool)
 processInput pressed (JuliaState vp (cx :+ cy) its period) =
     let ax = axisInput pressed
         axs = axisInputShift pressed
@@ -236,12 +236,10 @@ processInput pressed (JuliaState vp (cx :+ cy) its period) =
         --transform handling the viewport transformation - move, then zoom
         vp_transform = zoomViewport (exp $ zoom_speed*zoom) . moveViewport (move_speed*movex, move_speed*movey)
         c_tr = exp . (c_speed*) --julia C transformation
-    in (
-        --compute the new julia state by modifying any components necessary
-        JuliaState (vp_transform vp) ((cx*c_tr dcx) :+ (cy*c_tr dcy)) (its+dits) (period*exp (period_speed*dperiod)),
+    in  --compute the new julia state by modifying any components necessary
+        (JuliaState (vp_transform vp) ((cx*c_tr dcx) :+ (cy*c_tr dcy)) (its+dits) (period*exp (period_speed*dperiod)),
         --return true if any inputs have changed (any key is pressed)
-        or [on1, on2, on3, on4, on5, on6, on7]
-    )
+        or [on1, on2, on3, on4, on5, on6, on7])
 
 
 
